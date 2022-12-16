@@ -1,7 +1,15 @@
-// ------------------------------------------------------------
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-// ------------------------------------------------------------
+// ------------------------------------------------------------------------
+// Copyright 2021 The Dapr Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//     http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ------------------------------------------------------------------------
 
 using System;
 using System.Text.Json;
@@ -47,7 +55,7 @@ namespace Dapr.Actors.Runtime
             }
 
             #pragma warning disable 0618
-            var timerInfo = new TimerInfo(timer.TimerCallback, timer.Data, timer.DueTime, timer.Period);
+            var timerInfo = new TimerInfo(timer.TimerCallback, timer.Data, timer.DueTime, timer.Period, timer.Ttl);
             #pragma warning restore 0618
             var data = JsonSerializer.Serialize(timerInfo);
             await this.interactor.RegisterTimerAsync(timer.ActorType, timer.ActorId.ToString(), timer.Name, data);
@@ -65,7 +73,7 @@ namespace Dapr.Actors.Runtime
 
         private async ValueTask<string> SerializeReminderAsync(ActorReminder reminder)
         {
-            var info = new ReminderInfo(reminder.State, reminder.DueTime, reminder.Period);
+            var info = new ReminderInfo(reminder.State, reminder.DueTime, reminder.Period, reminder.Ttl);
             return await info.SerializeAsync();
         }
     }

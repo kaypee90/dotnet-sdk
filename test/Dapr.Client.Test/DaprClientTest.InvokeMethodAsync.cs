@@ -1,18 +1,29 @@
-﻿// ------------------------------------------------------------
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-// ------------------------------------------------------------
+﻿// ------------------------------------------------------------------------
+// Copyright 2021 The Dapr Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//     http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ------------------------------------------------------------------------
 
 namespace Dapr.Client.Test
 {
     using System;
+    using System.Collections.Generic;
     using System.Net;
     using System.Net.Http;
     using System.Net.Http.Json;
     using System.Text;
     using System.Text.Json;
+    using System.Threading;
     using System.Threading.Tasks;
     using Dapr.Client;
+    using FluentAssertions;
     using Xunit;
 
     // Most of the InvokeMethodAsync functionality on DaprClient is non-abstract methods that
@@ -242,6 +253,135 @@ namespace Dapr.Client.Test
             var actual = await request.CompleteWithJsonAsync(data, jsonSerializerOptions);
             Assert.Equal(data.Color, actual.Color);
         }
+        
+        [Fact]
+        public async Task CheckHealthAsync_Success()
+        {
+            await using var client = TestClient.CreateForDaprClient(c => 
+            {
+                c.UseGrpcEndpoint("http://localhost").UseHttpEndpoint("https://test-endpoint:3501").UseJsonSerializationOptions(this.jsonSerializerOptions);
+            });
+
+            var request = await client.CaptureHttpRequestAsync<bool>(async daprClient => 
+                await daprClient.CheckHealthAsync());
+
+            // Get Request and validate
+            Assert.Equal(request.Request.Method, HttpMethod.Get);
+            Assert.Equal(new Uri("https://test-endpoint:3501/v1.0/healthz").AbsoluteUri, request.Request.RequestUri.AbsoluteUri);
+
+            var result = await request.CompleteAsync(new HttpResponseMessage());
+            Assert.True(result);
+        }
+        
+        [Fact]
+        public async Task CheckHealthAsync_NotSuccess()
+        {
+            await using var client = TestClient.CreateForDaprClient(c => 
+            {
+                c.UseGrpcEndpoint("http://localhost").UseHttpEndpoint("https://test-endpoint:3501").UseJsonSerializationOptions(this.jsonSerializerOptions);
+            });
+
+            var request = await client.CaptureHttpRequestAsync<bool>(async daprClient => 
+                await daprClient.CheckHealthAsync());
+
+            // Get Request and validate
+            Assert.Equal(request.Request.Method, HttpMethod.Get);
+            Assert.Equal(new Uri("https://test-endpoint:3501/v1.0/healthz").AbsoluteUri, request.Request.RequestUri.AbsoluteUri);
+
+            var result = await request.CompleteAsync(new HttpResponseMessage(HttpStatusCode.InternalServerError));
+            Assert.False(result);
+        }
+        
+        [Fact]
+        public async Task CheckHealthAsync_WrapsHttpRequestException()
+        {
+            await using var client = TestClient.CreateForDaprClient(c => 
+            {
+                c.UseGrpcEndpoint("http://localhost").UseHttpEndpoint("https://test-endpoint:3501").UseJsonSerializationOptions(this.jsonSerializerOptions);
+            });
+
+            var request = await client.CaptureHttpRequestAsync<bool>(async daprClient => 
+                await daprClient.CheckHealthAsync());
+
+            Assert.Equal(request.Request.Method, HttpMethod.Get);
+            Assert.Equal(new Uri("https://test-endpoint:3501/v1.0/healthz").AbsoluteUri, request.Request.RequestUri.AbsoluteUri);
+            
+            var exception = new HttpRequestException();
+            var result = await request.CompleteWithExceptionAndResultAsync(exception);
+            Assert.False(result);
+        }
+
+        [Fact]
+        public async Task CheckOutboundHealthAsync_Success()
+        {
+            await using var client = TestClient.CreateForDaprClient(c =>
+            {
+                c.UseGrpcEndpoint("http://localhost").UseHttpEndpoint("https://test-endpoint:3501").UseJsonSerializationOptions(this.jsonSerializerOptions);
+            });
+            var request = await client.CaptureHttpRequestAsync<bool>(async daprClient => await daprClient.CheckOutboundHealthAsync());
+
+            Assert.Equal(request.Request.Method, HttpMethod.Get);
+            Assert.Equal(new Uri("https://test-endpoint:3501/v1.0/healthz/outbound").AbsoluteUri, request.Request.RequestUri.AbsoluteUri);
+
+            var result = await request.CompleteAsync(new HttpResponseMessage());
+            Assert.True(result);
+        }
+
+        [Fact]
+        public async Task CheckOutboundHealthAsync_NotSuccess()
+        {
+            await using var client = TestClient.CreateForDaprClient(c =>
+            {
+                c.UseGrpcEndpoint("http://localhost").UseHttpEndpoint("https://test-endpoint:3501").UseJsonSerializationOptions(this.jsonSerializerOptions);
+            });
+            var request = await client.CaptureHttpRequestAsync<bool>(async daprClient => await daprClient.CheckOutboundHealthAsync());
+
+            Assert.Equal(request.Request.Method, HttpMethod.Get);
+            Assert.Equal(new Uri("https://test-endpoint:3501/v1.0/healthz/outbound").AbsoluteUri, request.Request.RequestUri.AbsoluteUri);
+
+            var result = await request.CompleteAsync(new HttpResponseMessage(HttpStatusCode.InternalServerError));
+            Assert.False(result);
+        }
+
+        [Fact]
+        public async Task CheckOutboundHealthAsync_WrapsRequestException()
+        {
+            await using var client = TestClient.CreateForDaprClient(c =>
+            {
+                c.UseGrpcEndpoint("http://localhost").UseHttpEndpoint("https://test-endpoint:3501").UseJsonSerializationOptions(this.jsonSerializerOptions);
+            });
+            var request = await client.CaptureHttpRequestAsync<bool>(async daprClient => await daprClient.CheckOutboundHealthAsync());
+
+            Assert.Equal(request.Request.Method, HttpMethod.Get);
+            Assert.Equal(new Uri("https://test-endpoint:3501/v1.0/healthz/outbound").AbsoluteUri, request.Request.RequestUri.AbsoluteUri);
+
+            var result = await request.CompleteWithExceptionAndResultAsync(new HttpRequestException());
+            Assert.False(result);
+        }
+
+        [Fact]
+        public async Task WaitForSidecarAsync_SuccessWhenSidecarHealthy()
+        {
+            await using var client = TestClient.CreateForDaprClient();
+            var request = await client.CaptureHttpRequestAsync(async daprClient => await daprClient.WaitForSidecarAsync());
+
+            // If we don't throw, we're good.
+            await request.CompleteAsync(new HttpResponseMessage());
+        }
+
+        [Fact]
+        public async Task WaitForSidecarAsync_NotSuccessWhenSidecarNotHealthy()
+        {
+            await using var client = TestClient.CreateForDaprClient();
+            using var cts = new CancellationTokenSource();
+            var waitRequest = await client.CaptureHttpRequestAsync(async daprClient => await daprClient.WaitForSidecarAsync(cts.Token));
+            var healthRequest = await client.CaptureHttpRequestAsync<bool>(async daprClient => await daprClient.CheckOutboundHealthAsync());
+
+            cts.Cancel();
+
+            await healthRequest.CompleteAsync(new HttpResponseMessage(HttpStatusCode.InternalServerError));
+            await Assert.ThrowsAsync<TaskCanceledException>(async () => await waitRequest.CompleteWithExceptionAsync(new TaskCanceledException()));
+        }
 
         [Fact]
         public async Task InvokeMethodAsync_WrapsHttpRequestException()
@@ -376,6 +516,82 @@ namespace Dapr.Client.Test
 
             var request = client.InnerClient.CreateInvokeMethodRequest("test-app", method);
             Assert.Equal(new Uri(expected).AbsoluteUri, request.RequestUri.AbsoluteUri);
+        }
+
+        [Fact]
+        public async Task CreateInvokeMethodRequest_WithoutApiToken_CreatesHttpRequestWithoutApiTokenHeader()
+        {
+            await using var client = TestClient.CreateForDaprClient(c => 
+            {
+                c
+                    .UseGrpcEndpoint("http://localhost")
+                    .UseHttpEndpoint("https://test-endpoint:3501")
+                    .UseJsonSerializationOptions(this.jsonSerializerOptions)
+                    .UseDaprApiToken(null);
+            });
+
+            var request = client.InnerClient.CreateInvokeMethodRequest("test-app", "test");
+            Assert.False(request.Headers.TryGetValues("dapr-api-token", out _));
+        }
+
+        [Fact]
+        public async Task CreateInvokeMethodRequest_WithApiToken_CreatesHttpRequestWithApiTokenHeader()
+        {
+            await using var client = TestClient.CreateForDaprClient(c => 
+            {
+                c
+                    .UseGrpcEndpoint("http://localhost")
+                    .UseHttpEndpoint("https://test-endpoint:3501")
+                    .UseJsonSerializationOptions(this.jsonSerializerOptions)
+                    .UseDaprApiToken("test-token");
+            });
+
+            var request = client.InnerClient.CreateInvokeMethodRequest("test-app", "test");
+            Assert.True(request.Headers.TryGetValues("dapr-api-token", out var values));
+            Assert.Equal("test-token", Assert.Single(values));
+        }
+
+        [Fact]
+        public async Task CreateInvokeMethodRequest_WithoutApiTokenAndWithData_CreatesHttpRequestWithoutApiTokenHeader()
+        {
+            await using var client = TestClient.CreateForDaprClient(c => 
+            {
+                c
+                    .UseGrpcEndpoint("http://localhost")
+                    .UseHttpEndpoint("https://test-endpoint:3501")
+                    .UseJsonSerializationOptions(this.jsonSerializerOptions)
+                    .UseDaprApiToken(null);
+            });
+
+            var data = new Widget
+            {
+                Color = "red",
+            };
+
+            var request = client.InnerClient.CreateInvokeMethodRequest("test-app", "test", data);
+            Assert.False(request.Headers.TryGetValues("dapr-api-token", out _));
+        }
+
+        [Fact]
+        public async Task CreateInvokeMethodRequest_WithApiTokenAndData_CreatesHttpRequestWithApiTokenHeader()
+        {
+            await using var client = TestClient.CreateForDaprClient(c => 
+            {
+                c
+                    .UseGrpcEndpoint("http://localhost")
+                    .UseHttpEndpoint("https://test-endpoint:3501")
+                    .UseJsonSerializationOptions(this.jsonSerializerOptions)
+                    .UseDaprApiToken("test-token");
+            });
+
+            var data = new Widget
+            {
+                Color = "red",
+            };
+
+            var request = client.InnerClient.CreateInvokeMethodRequest("test-app", "test", data);
+            Assert.True(request.Headers.TryGetValues("dapr-api-token", out var values));
+            Assert.Equal("test-token", Assert.Single(values));
         }
 
         [Fact]

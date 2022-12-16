@@ -1,20 +1,29 @@
-﻿// ------------------------------------------------------------
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-// ------------------------------------------------------------
+// ------------------------------------------------------------------------
+// Copyright 2021 The Dapr Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//     http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ------------------------------------------------------------------------
+
+using System;
+using System.Buffers;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Dapr.Actors.Client;
+using Microsoft.Extensions.Logging;
 
 namespace Dapr.Actors.Runtime
 {
-    using System;
-    using System.Buffers;
-    using System.Collections.Generic;
-    using System.IO;
-    using System.Text.Json;
-    using System.Threading;
-    using System.Threading.Tasks;
-    using Dapr.Actors.Client;
-    using Microsoft.Extensions.Logging;
-
     /// <summary>
     /// Contains methods to register actor types. Registering the types allows the runtime to create instances of the actor.
     /// </summary>
@@ -41,7 +50,7 @@ namespace Dapr.Actors.Runtime
             // Revisit this if actor initialization becomes a significant source of delay for large projects.
             foreach (var actor in options.Actors)
             {
-                var daprInteractor = new DaprHttpInteractor(clientHandler: null, httpEndpoint: options.HttpEndpoint, apiToken: options.DaprApiToken);
+                var daprInteractor = new DaprHttpInteractor(clientHandler: null, httpEndpoint: options.HttpEndpoint, apiToken: options.DaprApiToken, requestTimeout: null);
                 this.actorManagers[actor.Type.ActorTypeName] = new ActorManager(
                     actor,
                     actor.Activator ?? this.activatorFactory.CreateActivator(actor.Type),
@@ -72,29 +81,70 @@ namespace Dapr.Actors.Runtime
 
             writer.WriteEndArray();
 
-            if (this.options.ActorIdleTimeout != null)
-            {
-                writer.WriteString("actorIdleTimeout", ConverterUtils.ConvertTimeSpanValueInDaprFormat(this.options.ActorIdleTimeout));
-            }
+            writeActorOptions(writer, this.options);
 
-            if (this.options.ActorScanInterval != null)
-            {
-                writer.WriteString("actorScanInterval", ConverterUtils.ConvertTimeSpanValueInDaprFormat(this.options.ActorScanInterval));
-            }
+            var actorsWithConfigs = this.options.Actors.Where(actor => actor.TypeOptions != null).ToList();
 
-            if (this.options.DrainOngoingCallTimeout != null)
+            if (actorsWithConfigs.Count > 0)
             {
-                writer.WriteString("drainOngoingCallTimeout", ConverterUtils.ConvertTimeSpanValueInDaprFormat(this.options.DrainOngoingCallTimeout));
-            }
+                writer.WritePropertyName("entitiesConfig");
+                writer.WriteStartArray();
+                foreach (var actor in actorsWithConfigs)
+                {
+                    writer.WriteStartObject();
+                    writer.WritePropertyName("entities");
+                    writer.WriteStartArray();
+                    writer.WriteStringValue(actor.Type.ActorTypeName);
+                    writer.WriteEndArray();
 
-            // default is false, don't write it if default
-            if (this.options.DrainRebalancedActors != false)
-            {
-                writer.WriteBoolean("drainRebalancedActors", (this.options.DrainRebalancedActors));
+                    writeActorOptions(writer, actor.TypeOptions);
+
+                    writer.WriteEndObject();
+                }
+                writer.WriteEndArray();
             }
 
             writer.WriteEndObject();
             return writer.FlushAsync();
+        }
+
+        private void writeActorOptions(Utf8JsonWriter writer, ActorRuntimeOptions actorOptions)
+        {
+            if (actorOptions.ActorIdleTimeout != null)
+            {
+                writer.WriteString("actorIdleTimeout", ConverterUtils.ConvertTimeSpanValueInDaprFormat(actorOptions.ActorIdleTimeout));
+            }
+
+            if (actorOptions.ActorScanInterval != null)
+            {
+                writer.WriteString("actorScanInterval", ConverterUtils.ConvertTimeSpanValueInDaprFormat(actorOptions.ActorScanInterval));
+            }
+
+            if (actorOptions.DrainOngoingCallTimeout != null)
+            {
+                writer.WriteString("drainOngoingCallTimeout", ConverterUtils.ConvertTimeSpanValueInDaprFormat(actorOptions.DrainOngoingCallTimeout));
+            }
+
+            // default is false, don't write it if default
+            if (actorOptions.DrainRebalancedActors != false)
+            {
+                writer.WriteBoolean("drainRebalancedActors", (actorOptions.DrainRebalancedActors));
+            }
+
+            // default is null, don't write it if default
+            if (actorOptions.RemindersStoragePartitions != null)
+            {
+                writer.WriteNumber("remindersStoragePartitions", actorOptions.RemindersStoragePartitions.Value);
+            }
+
+            // Reentrancy has a default value so it is always included.
+            writer.WriteStartObject("reentrancy");
+            writer.WriteBoolean("enabled", actorOptions.ReentrancyConfig.Enabled);
+            if (actorOptions.ReentrancyConfig.MaxStackDepth != null)
+            {
+                writer.WriteNumber("maxStackDepth", actorOptions.ReentrancyConfig.MaxStackDepth.Value);
+            }
+            writer.WriteEndObject();
         }
 
         // Deactivates an actor for an actor type with given actor id.

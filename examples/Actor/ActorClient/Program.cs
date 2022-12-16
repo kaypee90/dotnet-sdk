@@ -1,11 +1,20 @@
-﻿// ------------------------------------------------------------
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-// ------------------------------------------------------------
+// ------------------------------------------------------------------------
+// Copyright 2021 The Dapr Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//     http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ------------------------------------------------------------------------
 
 namespace ActorClient
 {
     using System;
+    using System.Threading;
     using System.Threading.Tasks;
     using Dapr.Actors;
     using Dapr.Actors.Client;
@@ -92,6 +101,14 @@ namespace ActorClient
             Console.WriteLine("Deregistering reminder. Reminders are durable and would not stop until an explicit deregistration or the actor is deleted.");
             await proxy.UnregisterReminder();
 
+            Console.WriteLine("Registering reminder and Timer with TTL - The reminder will self delete after 10 seconds.");
+            await proxy.RegisterReminderWithTtl(TimeSpan.FromSeconds(10));
+            await proxy.RegisterTimerWithTtl(TimeSpan.FromSeconds(10));
+
+            // Track the reminder.
+            var timer = new Timer(async state => Console.WriteLine($"Received data: {await proxy.GetData()}"), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            await Task.Delay(TimeSpan.FromSeconds(21));
+            await timer.DisposeAsync();
 
             Console.WriteLine("Creating a Bank Actor");
             var bank = ActorProxy.Create<IBankActor>(ActorId.CreateRandom(), "DemoActor");

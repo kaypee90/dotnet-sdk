@@ -1,7 +1,15 @@
-﻿// ------------------------------------------------------------
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-// ------------------------------------------------------------
+// ------------------------------------------------------------------------
+// Copyright 2021 The Dapr Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//     http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ------------------------------------------------------------------------
 
 namespace Dapr.Client.Test
 {
@@ -127,6 +135,64 @@ namespace Dapr.Client.Test
             envelope.Metadata.Keys.Contains("key2").Should().BeTrue();
             envelope.Metadata["key1"].Should().Be("value1");
             envelope.Metadata["key2"].Should().Be("value2");
+        }
+
+        [Fact]
+        public async Task PublishEventAsync_CanPublishCloudEventWithData()
+        {
+            await using var client = TestClient.CreateForDaprClient();
+
+            var publishData = new PublishData() { PublishObjectParameter = "testparam" };
+            var cloudEvent = new CloudEvent<PublishData>(publishData)
+            {
+                Source = new Uri("urn:testsource"),
+                Type = "testtype",
+                Subject = "testsubject",
+            };
+            var request = await client.CaptureGrpcRequestAsync(async daprClient =>
+            {
+                await daprClient.PublishEventAsync<CloudEvent<PublishData>>(TestPubsubName, "test", cloudEvent);
+            });
+
+            request.Dismiss();
+
+            var envelope = await request.GetRequestEnvelopeAsync<PublishEventRequest>();
+            var jsonFromRequest = envelope.Data.ToStringUtf8();
+
+            envelope.DataContentType.Should().Be("application/cloudevents+json");
+            envelope.PubsubName.Should().Be(TestPubsubName);
+            envelope.Topic.Should().Be("test");
+            jsonFromRequest.Should().Be(JsonSerializer.Serialize(cloudEvent, client.InnerClient.JsonSerializerOptions));
+            envelope.Metadata.Count.Should().Be(0);
+        }
+
+        [Fact]
+        public async Task PublishEventAsync_CanPublishCloudEventWithNoContent()
+        {
+            await using var client = TestClient.CreateForDaprClient();
+
+            var publishData = new PublishData() { PublishObjectParameter = "testparam" };
+            var cloudEvent = new CloudEvent
+            {
+                Source = new Uri("urn:testsource"),
+                Type = "testtype",
+                Subject = "testsubject",
+            };
+            var request = await client.CaptureGrpcRequestAsync(async daprClient =>
+            {
+                await daprClient.PublishEventAsync<CloudEvent>(TestPubsubName, "test", cloudEvent);
+            });
+
+            request.Dismiss();
+
+            var envelope = await request.GetRequestEnvelopeAsync<PublishEventRequest>();
+            var jsonFromRequest = envelope.Data.ToStringUtf8();
+
+            envelope.DataContentType.Should().Be("application/cloudevents+json");
+            envelope.PubsubName.Should().Be(TestPubsubName);
+            envelope.Topic.Should().Be("test");
+            jsonFromRequest.Should().Be(JsonSerializer.Serialize(cloudEvent, client.InnerClient.JsonSerializerOptions));
+            envelope.Metadata.Count.Should().Be(0);
         }
 
         [Fact]

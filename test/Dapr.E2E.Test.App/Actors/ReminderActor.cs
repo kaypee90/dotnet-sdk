@@ -1,7 +1,15 @@
-// ------------------------------------------------------------
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-// ------------------------------------------------------------
+// ------------------------------------------------------------------------
+// Copyright 2021 The Dapr Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//     http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ------------------------------------------------------------------------
 
 using System;
 using System.Text.Json;
@@ -36,13 +44,23 @@ namespace Dapr.E2E.Test.Actors.Reminders
             await this.StateManager.SetStateAsync<State>("reminder-state", new State(){ IsReminderRunning = true, });
         }
 
+        public async Task StartReminderWithTtl(TimeSpan ttl)
+        {
+            var options = new StartReminderOptions()
+            {
+                Total = 100,
+            };
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(options, this.Host.JsonSerializerOptions);
+            await this.RegisterReminderAsync("test-reminder-ttl", bytes, dueTime: TimeSpan.Zero, period: TimeSpan.FromSeconds(1), ttl: ttl);
+            await this.StateManager.SetStateAsync<State>("reminder-state", new State() { IsReminderRunning = true, });
+        }
+
         public async Task ReceiveReminderAsync(string reminderName, byte[] bytes, TimeSpan dueTime, TimeSpan period)
         {
-            if (reminderName != "test-reminder")
+            if (!reminderName.StartsWith("test-reminder"))
             {
                 return;
             }
-
             var options = JsonSerializer.Deserialize<StartReminderOptions>(bytes, this.Host.JsonSerializerOptions);
             var state = await this.StateManager.GetStateAsync<State>("reminder-state");
 
@@ -51,7 +69,7 @@ namespace Dapr.E2E.Test.Actors.Reminders
                 await this.UnregisterReminderAsync("test-reminder");
                 state.IsReminderRunning = false;
             }
-
+            state.Timestamp = DateTime.Now;
             await this.StateManager.SetStateAsync("reminder-state", state);
         }
     }

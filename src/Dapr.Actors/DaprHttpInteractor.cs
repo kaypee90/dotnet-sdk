@@ -1,7 +1,15 @@
-﻿// ------------------------------------------------------------
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-// ------------------------------------------------------------
+// ------------------------------------------------------------------------
+// Copyright 2021 The Dapr Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//     http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ------------------------------------------------------------------------
 
 namespace Dapr.Actors
 {
@@ -19,6 +27,7 @@ namespace Dapr.Actors
     using System.Threading.Tasks;
     using Dapr.Actors.Communication;
     using Dapr.Actors.Resources;
+    using System.Xml;
 
     /// <summary>
     /// Class to interact with Dapr runtime over http.
@@ -33,15 +42,19 @@ namespace Dapr.Actors
         private bool disposed;
         private string daprApiToken;
 
+        private const string EXCEPTION_HEADER_TAG = "b:KeyValueOfstringbase64Binary";
+
         public DaprHttpInteractor(
             HttpMessageHandler clientHandler,
             string httpEndpoint,
-            string apiToken)
+            string apiToken,
+            TimeSpan? requestTimeout)
         {
             this.handler = clientHandler ?? defaultHandler;
             this.httpEndpoint = httpEndpoint;
             this.daprApiToken = apiToken;
             this.httpClient = this.CreateHttpClient();
+            this.httpClient.Timeout = requestTimeout ?? this.httpClient.Timeout;
         }
 
         public async Task<string> GetStateAsync(string actorType, string actorId, string keyName, CancellationToken cancellationToken = default)
@@ -113,18 +126,23 @@ namespace Dapr.Actors
 
                 request.Headers.Add(Constants.RequestHeaderName, Encoding.UTF8.GetString(serializedHeader, 0, serializedHeader.Length));
 
+                var reentrancyId = ActorReentrancyContextAccessor.ReentrancyContext;
+                if (reentrancyId != null)
+                {
+                    request.Headers.Add(Constants.ReentrancyRequestHeaderName, reentrancyId);
+                }
+
                 return request;
             }
 
             var retval = await this.SendAsync(RequestFunc, relativeUrl, cancellationToken);
-
+            var header = "";
             IActorResponseMessageHeader actorResponseMessageHeader = null;
             if (retval != null && retval.Headers != null)
             {
                 if (retval.Headers.TryGetValues(Constants.ErrorResponseHeaderName, out IEnumerable<string> headerValues))
                 {
-                    var header = headerValues.First();
-
+                    header = headerValues.First();
                     // DeSerialize Actor Response Message Header
                     actorResponseMessageHeader =
                         serializersManager.GetHeaderSerializer()
@@ -152,8 +170,9 @@ namespace Dapr.Actors
                                 out var remoteMethodException);
                     if (isDeserialzied)
                     {
+                        var exceptionDetails = GetExceptionDetails(header.ToString());
                         throw new ActorMethodInvocationException(
-                            "Remote Actor Method Exception",
+                            "Remote Actor Method Exception,  DETAILS: " + exceptionDetails,
                             remoteMethodException,
                             false /* non transient */);
                     }
@@ -172,6 +191,19 @@ namespace Dapr.Actors
             return new ActorResponseMessage(actorResponseMessageHeader, actorResponseMessageBody);
         }
 
+        private string GetExceptionDetails(string header) {
+            XmlDocument xmlHeader = new XmlDocument();
+            xmlHeader.LoadXml(header);
+            XmlNodeList exceptionValueXML = xmlHeader.GetElementsByTagName(EXCEPTION_HEADER_TAG);
+            string exceptionDetails = "";
+            if (exceptionValueXML != null && exceptionValueXML.Item(1) != null)
+            {
+                exceptionDetails = exceptionValueXML.Item(1).LastChild.InnerText;
+            }
+            var base64EncodedBytes = System.Convert.FromBase64String(exceptionDetails);
+            return Encoding.UTF8.GetString(base64EncodedBytes);
+        }
+
         public async Task<Stream> InvokeActorMethodWithoutRemotingAsync(string actorType, string actorId, string methodName, string jsonPayload, CancellationToken cancellationToken = default)
         {
             var relativeUrl = string.Format(CultureInfo.InvariantCulture, Constants.ActorMethodRelativeUrlFormat, actorType, actorId, methodName);
@@ -187,6 +219,12 @@ namespace Dapr.Actors
                 {
                     request.Content = new StringContent(jsonPayload);
                     request.Content.Headers.ContentType = System.Net.Http.Headers.MediaTypeHeaderValue.Parse("application/json; charset=utf-8");
+                }
+
+                var reentrancyId = ActorReentrancyContextAccessor.ReentrancyContext;
+                if (reentrancyId != null)
+                {
+                    request.Headers.Add(Constants.ReentrancyRequestHeaderName, reentrancyId);
                 }
 
                 return request;

@@ -1,7 +1,15 @@
-// ------------------------------------------------------------
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-// ------------------------------------------------------------
+// ------------------------------------------------------------------------
+// Copyright 2021 The Dapr Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//     http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ------------------------------------------------------------------------
 namespace Dapr.E2E.Test
 {
     using System;
@@ -39,6 +47,28 @@ namespace Dapr.E2E.Test
 
             // Should count up to exactly 10
             Assert.Equal(10, state.Count);
+        }
+
+        [Fact]
+        public async Task ActorCanStartReminderWithTtl()
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            var proxy = this.ProxyFactory.CreateActorProxy<IReminderActor>(ActorId.CreateRandom(), "ReminderActor");
+
+            await WaitForActorRuntimeAsync(proxy, cts.Token);
+
+            // Reminder that should fire 3 times (at 0, 1, and 2 seconds)
+            await proxy.StartReminderWithTtl(TimeSpan.FromSeconds(2));
+
+            // Record the start time and wait for longer than the reminder should exist for.
+            var start = DateTime.Now;
+            await Task.Delay(TimeSpan.FromSeconds(5));
+
+            var state = await proxy.GetState();
+
+            // Make sure the reminder has fired and that it didn't fire within the past second since it should have expired.
+            Assert.True(state.Timestamp.Subtract(start) > TimeSpan.Zero, "Reminder may not have triggered.");
+            Assert.True(DateTime.Now.Subtract(state.Timestamp) > TimeSpan.FromSeconds(1), $"Reminder triggered too recently. {DateTime.Now} - {state.Timestamp}");
         }
     }
 }

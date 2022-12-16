@@ -1,19 +1,32 @@
-﻿// ------------------------------------------------------------
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-// ------------------------------------------------------------
+﻿// ------------------------------------------------------------------------
+// Copyright 2021 The Dapr Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//     http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ------------------------------------------------------------------------
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Reflection;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Google.Protobuf;
+using Grpc.Core;
+using Grpc.Core.Interceptors;
+using Grpc.Net.Client;
 
 namespace Dapr.Client
 {
-    using System;
-    using System.Collections.Generic;
-    using System.Net.Http;
-    using System.Text.Json;
-    using System.Threading;
-    using System.Threading.Tasks;
-    using Google.Protobuf;
-    using Grpc.Core;
-
     /// <summary>
     /// <para>
     /// Defines client methods for interacting with Dapr endpoints.
@@ -34,7 +47,7 @@ namespace Dapr.Client
         /// Gets the <see cref="JsonSerializerOptions" /> used for JSON serialization operations.
         /// </summary>
         public abstract JsonSerializerOptions JsonSerializerOptions { get; }
-        
+
         /// <summary>
         /// <para>
         /// Creates an <see cref="HttpClient" /> that can be used to perform Dapr service
@@ -76,7 +89,8 @@ namespace Dapr.Client
             }
 
             var httpClient = new HttpClient(handler);
-            
+            httpClient.DefaultRequestHeaders.UserAgent.Add(UserAgent());
+
             if (appId is string)
             {
                 try
@@ -92,14 +106,47 @@ namespace Dapr.Client
             return httpClient;
         }
 
-        internal static KeyValuePair<string, string> GetDaprApiTokenHeader(string apiToken)
+        /// <summary>
+        /// <para>
+        /// Creates an <see cref="CallInvoker"/> that can be used to perform locally defined gRPC calls 
+        /// using the Dapr sidecar as a proxy.
+        /// </para>
+        /// <para>
+        /// The created <see cref="CallInvoker"/> is used to intercept a <see cref="GrpcChannel"/> with an
+        /// <see cref="InvocationInterceptor"/>. The interceptor inserts the <paramref name="appId"/> and, if present,
+        /// the <paramref name="daprApiToken"/> into the request's metadata.
+        /// </para>
+        /// </summary>
+        /// <param name="appId">
+        /// The appId that is targetted by Dapr for gRPC invocations.
+        /// </param>
+        /// <param name="daprEndpoint">
+        /// Optional gRPC endpoint for calling Dapr, defaults to <see cref="DaprDefaults.GetDefaultGrpcEndpoint"/>.
+        /// </param>
+        /// <param name="daprApiToken">
+        /// Optional token to be attached to all requests, defaults to <see cref="DaprDefaults.GetDefaultDaprApiToken"/>.
+        /// </param>
+        /// <returns>An <see cref="CallInvoker"/> to be used for proxied gRPC calls through Dapr.</returns>
+        /// <remarks>
+        /// <para>
+        /// As the <paramref name="daprEndpoint"/> will remain constant, a single instance of the
+        /// <see cref="CallInvoker"/> can be used throughout the lifetime of the application.
+        /// </para>
+        /// </remarks>
+        public static CallInvoker CreateInvocationInvoker(string appId, string daprEndpoint = null, string daprApiToken = null)
         {
-            KeyValuePair<string, string> apiTokenHeader = default;
-            if(!string.IsNullOrWhiteSpace(apiToken))
+            var channel = GrpcChannel.ForAddress(daprEndpoint ?? DaprDefaults.GetDefaultGrpcEndpoint());
+            return channel.Intercept(new InvocationInterceptor(appId, daprApiToken ?? DaprDefaults.GetDefaultDaprApiToken()));
+        }
+
+        internal static KeyValuePair<string, string>? GetDaprApiTokenHeader(string apiToken)
+        {
+            if (string.IsNullOrWhiteSpace(apiToken))
             {
-                apiTokenHeader = new KeyValuePair<string, string>("dapr-api-token", apiToken);
+                return null;
             }
-            return apiTokenHeader;
+
+            return new KeyValuePair<string, string>("dapr-api-token", apiToken);
         }
 
         /// <summary>
@@ -261,6 +308,68 @@ namespace Dapr.Client
         /// <param name="data">The data that will be JSON serialized and provided as the request body.</param>
         /// <returns>An <see cref="HttpRequestMessage" /> for use with <c>SendInvokeMethodRequestAsync</c>.</returns>
         public abstract HttpRequestMessage CreateInvokeMethodRequest<TRequest>(HttpMethod httpMethod, string appId, string methodName, TRequest data);
+        
+        /// <summary>
+        /// Perform health-check of Dapr sidecar. Return 'true' if sidecar is healthy. Otherwise 'false'.
+        /// CheckHealthAsync handle <see cref="HttpRequestException"/> and will return 'false' if error will occur on transport level
+        /// </summary>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns>A <see cref="Task{T}" /> that will return the value when the operation has completed.</returns>
+        public abstract Task<bool> CheckHealthAsync(CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Perform health-check of Dapr sidecar's outbound APIs. Return 'true' if the sidecar is healthy. Otherwise false. This method should
+        /// be used over <see cref="CheckHealthAsync(CancellationToken)"/> when the health of Dapr is being checked before it starts. This
+        /// health endpoint indicates that Dapr has stood up its APIs and is currently waiting on this application to report fully healthy.
+        /// </summary>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns>A <see cref="Task{T}" /> that will return the value when the operation has completed.</returns>
+        public abstract Task<bool> CheckOutboundHealthAsync(CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Calls <see cref="CheckOutboundHealthAsync(CancellationToken)"/> until the sidecar is reporting as healthy. If the sidecar
+        /// does not become healthy, an exception will be thrown.
+        /// </summary>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns>A <see cref="Task" /> that will return when the operation has completed.</returns>
+        public abstract Task WaitForSidecarAsync(CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Send a command to the Dapr Sidecar telling it to shutdown.
+        /// </summary>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns>A <see cref="Task" /> that will return when the operation has completed.</returns>
+        public abstract Task ShutdownSidecarAsync(CancellationToken cancellationToken = default);
+        
+        /// <summary>
+        /// Calls the sidecar's metadata endpoint which returns information including:
+        /// <list type="bullet">
+        /// <item>
+        /// <description>The sidecar's ID.</description>
+        /// </item>
+        /// <item>
+        /// <description>The registered/active actors if any.</description>
+        /// </item>
+        /// <item>
+        /// <description>Registered components including name, type, version, and information on capabilities if present.</description>
+        /// </item>
+        /// <item>
+        /// <description>Any extended metadata that has been set via <see cref="SetMetadataAsync"/></description>
+        /// </item>
+        /// </list>
+        /// </summary>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns>A <see cref="Task{T}" /> that will return the value when the operation has completed.</returns>
+        public abstract Task<DaprMetadata> GetMetadataAsync(CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Perform service add extended metadata to the Dapr sidecar.
+        /// </summary>
+        /// <param name="attributeName">Custom attribute name</param>
+        /// <param name="attributeValue">Custom attribute value</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns>A <see cref="Task" /> that will return the value when the operation has completed.</returns>
+        public abstract Task SetMetadataAsync(string attributeName, string attributeValue, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Perform service invocation using the request provided by <paramref name="request" />. The response will
@@ -570,6 +679,24 @@ namespace Dapr.Client
         /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
         /// <returns>A <see cref="Task{IReadOnlyList}" /> that will return the list of values when the operation has completed.</returns>
         public abstract Task<IReadOnlyList<BulkStateItem>> GetBulkStateAsync(string storeName, IReadOnlyList<string> keys, int? parallelism, IReadOnlyDictionary<string, string> metadata = default, CancellationToken cancellationToken = default);
+        
+        /// <summary>
+        /// Saves a list of <paramref name="items" /> to the Dapr state store.
+        /// </summary>
+        /// <param name="storeName">The name of state store.</param>
+        /// <param name="items">The list of items to save.</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns>A <see cref="Task" /> that will complete when the operation has completed.</returns>
+        public abstract Task SaveBulkStateAsync<TValue>(string storeName, IReadOnlyList<SaveStateItem<TValue>> items, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Deletes a list of <paramref name="items" /> from the Dapr state store.
+        /// </summary>
+        /// <param name="storeName">The name of state store to delete from.</param>
+        /// <param name="items">The list of items to delete</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns>A <see cref="Task" /> that will complete when the operation has completed.</returns>
+        public abstract Task DeleteBulkStateAsync(string storeName, IReadOnlyList<BulkDeleteStateItem> items, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Gets the current value associated with the <paramref name="key" /> from the Dapr state store and an ETag.
@@ -697,6 +824,22 @@ namespace Dapr.Client
             CancellationToken cancellationToken = default);
 
         /// <summary>
+        /// Queries the specified statestore with the given query. The query is a JSON representation of the query as described by the Dapr QueryState API.
+        /// Note that the underlying statestore must support queries.
+        /// </summary>
+        /// <param name="storeName">The name of the statestore.</param>
+        /// <param name="jsonQuery">A JSON formatted query string.</param>
+        /// <param name="metadata">Metadata to send to the statestore.</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken"/> that can be used to cancel the operation.</param>
+        /// <typeparam name="TValue">The data type of the value to read.</typeparam>
+        /// <returns>A <see cref="StateQueryResponse{TValue}"/> that may be paginated, use <see cref="StateQueryResponse{TValue}.Token"/> to continue the query.</returns>
+        public abstract Task<StateQueryResponse<TValue>> QueryStateAsync<TValue>(
+            string storeName,
+            string jsonQuery,
+            IReadOnlyDictionary<string, string> metadata = default,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
         /// Gets the secret value from the secret store.
         /// </summary>
         /// <param name="storeName">Secret store name.</param>
@@ -722,6 +865,82 @@ namespace Dapr.Client
             IReadOnlyDictionary<string, string> metadata = default,
             CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// Get a list of configuration items based on keys from the given statestore. 
+        /// </summary>
+        /// <param name="storeName">The name of the configuration store to be queried.</param>
+        /// <param name="keys">An optional list of keys to query for. If provided, the result will only contain those keys. An empty list indicates all keys should be fetched.</param>
+        /// <param name="metadata">Optional metadata that will be sent to the configuration store being queried.</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns>A <see cref="Task"/> containing a <see cref="GetConfigurationResponse"/></returns>
+        [Obsolete("This API is currently not stable as it is in the Alpha stage. This attribute will be removed once it is stable.")]
+        public abstract Task<GetConfigurationResponse> GetConfiguration(
+            string storeName,
+            IReadOnlyList<string> keys,
+            IReadOnlyDictionary<string, string> metadata = default,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Subscribe to a configuration store for the specified keys and receive an updated value whenever the key is updated in the store.
+        /// </summary>
+        /// <param name="storeName">The name of the configuration store to be queried.</param>
+        /// <param name="keys">An optional list of keys to query for. If provided, the result will only contain those keys. An empty list indicates all keys should be fetched.</param>
+        /// <param name="metadata">Optional metadata that will be sent to the configuration store being queried.</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns>A <see cref="SubscribeConfigurationResponse"/> which contains a reference to the stream.</returns>
+        [Obsolete("This API is currently not stable as it is in the Alpha stage. This attribute will be removed once it is stable.")]
+        public abstract Task<SubscribeConfigurationResponse> SubscribeConfiguration(
+            string storeName,
+            IReadOnlyList<string> keys,
+            IReadOnlyDictionary<string, string> metadata = default,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Unsubscribe from a configuration store using the specified Id.
+        /// </summary>
+        /// <param name="storeName">The name of the configuration store.</param>
+        /// <param name="id">The Id of the subscription that should no longer be watched.</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns></returns>
+        [Obsolete("This API is currently not stable as it is in the Alpha stage. This attribute will be removed once it is stable.")]
+        public abstract Task<UnsubscribeConfigurationResponse> UnsubscribeConfiguration(
+            string storeName,
+            string id,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Attempt to lock the given resourceId with response indicating success.
+        /// </summary>
+        /// <param name="storeName">The name of the lock store to be queried.</param>
+        /// <param name="resourceId">Lock key that stands for which resource to protect.</param>
+        /// <param name="lockOwner">Indicates the identifier of lock owner.</param>
+        /// <param name="expiryInSeconds">The time after which the lock gets expired.</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns>A <see cref="Task"/> containing a <see cref="TryLockResponse"/></returns>
+        [Obsolete("This API is currently not stable as it is in the Alpha stage. This attribute will be removed once it is stable.")]
+        public abstract Task<TryLockResponse> Lock(
+            string storeName,
+            string resourceId,
+            string lockOwner,
+            Int32 expiryInSeconds,
+            CancellationToken cancellationToken = default);
+
+
+        /// <summary>
+        /// Attempt to unlock the given resourceId with response indicating success. 
+        /// </summary>
+        /// <param name="storeName">The name of the lock store to be queried.</param>
+        /// <param name="resourceId">Lock key that stands for which resource to protect.</param>
+        /// <param name="lockOwner">Indicates the identifier of lock owner.</param>
+        /// <param name="cancellationToken">A <see cref="CancellationToken" /> that can be used to cancel the operation.</param>
+        /// <returns>A <see cref="Task"/> containing a <see cref="UnlockResponse"/></returns>
+        [Obsolete("This API is currently not stable as it is in the Alpha stage. This attribute will be removed once it is stable.")]
+        public abstract Task<UnlockResponse> Unlock(
+            string storeName,
+            string resourceId,
+            string lockOwner,
+            CancellationToken cancellationToken = default);
+
         /// <inheritdoc />
         public void Dispose()
         {
@@ -738,6 +957,21 @@ namespace Dapr.Client
         /// <param name="disposing"><c>true</c> if called by a call to the <c>Dispose</c> method; otherwise false.</param>
         protected virtual void Dispose(bool disposing)
         {
+        }
+
+        /// <summary>
+        /// Returns the value for the User-Agent.
+        /// </summary>
+        /// <returns>A <see cref="ProductInfoHeaderValue"/> containing the value to use for User-Agent.</returns>
+        protected static ProductInfoHeaderValue UserAgent()
+        {
+            var assembly = typeof(DaprClient).Assembly;
+            string assemblyVersion = assembly
+                .GetCustomAttributes<AssemblyInformationalVersionAttribute>()
+                .FirstOrDefault()?
+                .InformationalVersion;
+
+            return new ProductInfoHeaderValue("dapr-sdk-dotnet", $"v{assemblyVersion}");
         }
     }
 }

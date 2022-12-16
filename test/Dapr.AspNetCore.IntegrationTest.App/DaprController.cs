@@ -1,7 +1,15 @@
-﻿// ------------------------------------------------------------
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-// ------------------------------------------------------------
+﻿// ------------------------------------------------------------------------
+// Copyright 2021 The Dapr Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//     http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ------------------------------------------------------------------------
 
 namespace Dapr.AspNetCore.IntegrationTest.App
 {
@@ -10,6 +18,7 @@ namespace Dapr.AspNetCore.IntegrationTest.App
     using System.Threading.Tasks;
     using Dapr;
     using Dapr.Client;
+    using Microsoft.AspNetCore.Authorization;
     using Microsoft.AspNetCore.Mvc;
     using Microsoft.AspNetCore.WebUtilities;
 
@@ -19,6 +28,81 @@ namespace Dapr.AspNetCore.IntegrationTest.App
         [Topic("pubsub", "B")]
         [HttpPost("/B")]
         public void TopicB()
+        {
+        }
+
+        [CustomTopic("pubsub", "C")]
+        [HttpPost("/C")]
+        public void TopicC()
+        {
+        }
+
+        [Topic("pubsub", "D", true)]
+        [HttpPost("/D")]
+        public void TopicD()
+        {
+        }
+
+        [Topic("pubsub", "E", false)]
+        [HttpPost("/E")]
+        public void TopicE()
+        {
+        }
+
+        [Topic("pubsub", "E", false, "event.type == \"critical\"", 1)]
+        [HttpPost("/E-Critical")]
+        public void TopicECritical()
+        {
+        }
+
+        [Topic("pubsub", "E", false, "event.type == \"important\"", 2)]
+        [HttpPost("/E-Important")]
+        public void TopicEImportant()
+        {
+        }
+
+        [Topic("pubsub", "F")]
+        [Topic("pubsub", "F.1", true)]
+        [HttpPost("/multiTopicAttr")]
+        public void MultipleTopics()
+        {
+        }
+                
+        [Topic("pubsub", "G", "deadLetterTopicName", false)]
+        [HttpPost("/G")]
+        public void TopicG()
+        {
+        }
+
+        [Topic("pubsub", "metadata", new string[1] { "id1" })]
+        [Topic("pubsub", "metadata.1", true)]
+        [HttpPost("/multiMetadataTopicAttr")]
+        [TopicMetadata("n1", "v1")]
+        [TopicMetadata("id1", "n2", "v2")]
+        [TopicMetadata("id1", "n2", "v3")]
+        public void MultipleMetadataTopics()
+        {
+        }
+
+        [Topic("pubsub", "metadataseparator", metadataSeparator: "|")]
+        [HttpPost("/topicmetadataseparatorattr")]
+        [TopicMetadata("n1", "v1")]
+        [TopicMetadata("n1", "v2")]
+        public void TopicMetadataSeparator()
+        {
+        }
+
+        [Topic("pubsub", "metadataseparatorbyemptytring")]
+        [HttpPost("/topicmetadataseparatorattrbyemptytring")]
+        [TopicMetadata("n1", "v1")]
+        [TopicMetadata("n1", "")]
+        public void TopicMetadataSeparatorByemptytring ()
+        {
+        }
+
+        [Topic("pubsub", "splitTopicAttr", true)]
+        [HttpPost("/splitTopics")]
+        public void SplitTopic()
         {
         }
 
@@ -60,7 +144,7 @@ namespace Dapr.AspNetCore.IntegrationTest.App
         }
 
         [HttpPost("/echo-user")]
-        public ActionResult<UserInfo> EchoUser([FromQuery]UserInfo user)
+        public ActionResult<UserInfo> EchoUser([FromQuery] UserInfo user)
         {
             // To simulate an action where there's no Dapr attribute, yet MVC still checks the list of available model binder providers.
             return user;
@@ -78,5 +162,11 @@ namespace Dapr.AspNetCore.IntegrationTest.App
             return widgetStateEntry.Value;
         }
 
+        [Authorize("Dapr")]
+        [HttpPost("/requires-api-token")]
+        public ActionResult<UserInfo> RequiresApiToken(UserInfo user)
+        {
+            return user;
+        }
     }
 }
